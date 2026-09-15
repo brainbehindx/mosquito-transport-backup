@@ -1,0 +1,39 @@
+{
+  "name": "mosquito-transport-backup",
+  "version": "1.0.0",
+  "description": "Backup and restoration interface for mosquito-transport data (Mongodb data & storage files)",
+  "keywords": [
+    "mosquito-transport-backup",
+    "backup",
+    "mongodb",
+    "backup"
+  ],
+  "homepage": "https://github.com/brainbehindx/mosquito-transport-backup#readme",
+  "bugs": {
+    "url": "https://github.com/brainbehindx/mosquito-transport-backup/issues"
+  },
+  "bin": {
+    "mosquito-data": "./src/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brainbehindx/mosquito-transport-backup.git"
+  },
+  "license": "MIT",
+  "author": "Anthony Onabanjo",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@deflexable/bit-stream": "^1.0.4",
+    "@types/qrcode": "^1.5.6",
+    "express": "^5.2.1",
+    "otplib": "^13.5.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6"
+  }
+}
