@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { isPath, isValidDbName, isValidMongoURL, Validator } from './utils.js';
+import { isPath, isValidColName, isValidDbName, isValidMongoURL, Validator } from './utils.js';
 import { createWriteStream, createReadStream } from "fs";
 import { Endpoints, getConfig } from './values.js';
 import { ReadableBit } from '@deflexable/bit-stream';
@@ -9,9 +9,14 @@ import backup from "./core/backup.js";
 import restore from './core/restore.js';
 import { stat } from 'node:fs/promises';
 import { request } from 'node:http';
+import { createHash } from 'node:crypto';
 
-const startTime = Date.now();
-const LOCAL_MARKER = Symbol('@local');
+let startTime = Date.now();
+const LOCAL_MARKER = {
+    description: '@local',
+    toString: () => '@local',
+    valueOf: () => '@local',
+};
 
 const externalConfig = await getConfig();
 
@@ -42,17 +47,21 @@ const write = writeTo === LOCAL_MARKER.description ? LOCAL_MARKER : writeTo;
 let database = externalConfig.database;
 
 if (db_url) {
-    if (!isValidMongoURL(db_url))
+    let this_url = db_url;
+
+    if (db_url === LOCAL_MARKER.description) {
+        this_url = 'mongodb://localhost:27017';
+    } else if (!isValidMongoURL(db_url))
         throw `invalid db_url: ${db_url}`;
 
     if (db_name !== '*' && !isValidDbName(db_name))
         throw `expected '*' or a valid db_name but got: ${db_name}`;
 
-    if (col !== '*' && !isValidMongoURL(col))
-        throw `expected '*' or a valid col but got: ${col}`;
+    if (col !== '*' && !isValidColName(col))
+        throw `expected '*' or a valid collection name but got: ${col}`;
 
     database = {
-        [db_url]:
+        [this_url]:
             db_name === '*'
                 ? '*'
                 : ({ [db_name]: col === '*' ? '*' : [col] })
@@ -60,7 +69,7 @@ if (db_url) {
 }
 
 const cleanup = () => {
-    console.log(`backup read from ${read || 'local'} and written to ${write || 'local'}`);
+    console.log(`backup read from ${read} and written to ${write}`);
     console.log(`process took ${Date.now() - startTime}ms`);
     process.exit(0);
 }
@@ -79,12 +88,14 @@ if (Validator.LINK(read) && isPath(write)) {
 
     const response =
         await fetch(remote_url, {
-            headers: {
-                passkey,
-                storage,
-                database: JSON.stringify(database),
-                offset
-            }
+            method: 'GET',
+            headers:
+                sanitizeHeader({
+                    passkey,
+                    storage,
+                    database: JSON.stringify(database),
+                    offset
+                })
         });
 
     if (!response.ok) {
@@ -96,7 +107,7 @@ if (Validator.LINK(read) && isPath(write)) {
     const isAppend = response.headers.get('fs-strategy') === 'APPEND';
     const output = createWriteStream(write, isAppend ? { flags: 'a' } : undefined);
 
-    if (isAppend) console.warn('Resuming from last byte');
+    if (isAppend) console.warn('Resuming from last byte:', offset);
 
     readable.on('data', chunk => {
         const tip = chunk.subarray(0, 1).toString('utf8');
@@ -104,7 +115,9 @@ if (Validator.LINK(read) && isPath(write)) {
 
         if (tip === 'H') {
             process.stdout.write(message);
-        } else output.write(message);
+        } else {
+            output.write(message);
+        }
     });
 
     readable.on('end', () => {
@@ -118,35 +131,64 @@ if (Validator.LINK(read) && isPath(write)) {
         process.exit(1);
     });
 
-    response.body.pipeThrough(readable);
+    const reader = response.body.getReader();
+
+    while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+            readable.end();
+            break;
+        }
+
+        readable.write(value);
+    }
 } else if (isPath(read) && Validator.LINK(write)) {
     // write a backup data from a file to a remote server
     const passkey = await askQuestion('Enter Request Passkey');
 
+    const file_id =
+        await stat(read).then(r => {
+            if (!r.isFile()) throw `'${read}' is not of type file`;
+
+            return createHash('sha256')
+                .update(`${r.size}-${read}`, 'utf8')
+                .digest('base64')
+                .substring(0, 30);
+        });
+
     const remote_url = new URL(write);
     remote_url.pathname = Endpoints.restore;
 
-    const req = request({
-        href: remote_url.href,
-        method: 'POST',
-        headers: {
-            'Transfer-Encoding': 'chunked',
-            passkey,
-            storage,
-            database: JSON.stringify(database)
+    const req =
+        request(remote_url, {
+            method: 'POST',
+            headers:
+                sanitizeHeader({
+                    'Transfer-Encoding': 'chunked',
+                    passkey,
+                    storage,
+                    database: JSON.stringify(database),
+                    file_id,
+                    'Expect': '100-continue'
+                })
+        });
+
+    let isOk;
+
+    req.on('information', info => {
+        let start = info?.headers['fs-start'];
+
+        if (start) {
+            start = (start * 1) || 0;
+            console.log('Resuming write from last byte:', start);
+            const readable = createReadStream(read, start ? { start } : undefined);
+            readable.pipe(req);
+            isOk = true;
         }
     });
 
     req.on('response', (res) => {
-        const isOk = res.statusCode === 200;
-
-        if (isOk) {
-            const start = (res.headers['fs-start'] * 1) || 0;
-            const readable = createReadStream(read, start ? { start } : undefined);
-
-            readable.pipe(req);
-        }
-
         res.on('data', (chunk) => {
             process.stdout.write(chunk);
         });
@@ -167,6 +209,8 @@ if (Validator.LINK(read) && isPath(write)) {
         console.error(err);
         process.exit(1);
     });
+
+    req.flushHeaders();
 } else if (read === LOCAL_MARKER && isPath(write)) {
     // download backup data from local to a file
     const password = await askQuestion('Enter Encryption Password (optional)');
@@ -174,7 +218,7 @@ if (Validator.LINK(read) && isPath(write)) {
 
     const stream =
         backup({
-            password,
+            password: password || undefined,
             storage,
             onMongodbOption,
             database,
@@ -185,7 +229,8 @@ if (Validator.LINK(read) && isPath(write)) {
         });
 
     stream.on('end', () => {
-        process.stdout.write(`\n${JSON.stringify(databaseMap, null, 2)}`);
+        if (databaseMap)
+            process.stdout.write(`\n${JSON.stringify(databaseMap, null, 2)}\n`);
         cleanup();
     });
 
@@ -203,14 +248,14 @@ if (Validator.LINK(read) && isPath(write)) {
 
     stream.pipe(
         restore({
-            password,
+            password: password || undefined,
             storage,
             onMongodbOption,
             onProgress: s => {
                 logLine(`restored ${s.documents} documents & ${s.files} files`);
             },
             onComplete: (r) => {
-                console.log('result:', JSON.stringify(r, null, 2));
+                process.stdout.write(`\n${JSON.stringify(r, null, 2)}\n`);
                 cleanup();
             },
             onError: err => {
@@ -228,12 +273,13 @@ if (Validator.LINK(read) && isPath(write)) {
 
     const response =
         await fetch(remote_url, {
-            headers: {
-                passkey,
-                storage,
-                database: JSON.stringify(database),
-                read
-            }
+            headers:
+                sanitizeHeader({
+                    passkey,
+                    storage,
+                    database: JSON.stringify(database),
+                    read
+                })
         });
 
     if (!response.ok) {
@@ -266,7 +312,8 @@ function askQuestion(question) {
         });
 
         rl.question(`${question}: `, (value) => {
-            resolve(value)
+            startTime = Date.now();
+            resolve(value);
             rl.close();
         });
     });
@@ -274,4 +321,10 @@ function askQuestion(question) {
 
 function logLine(text) {
     process.stdout.write(`\r\x1b[K${text}`);
+}
+
+function sanitizeHeader(o) {
+    return Object.fromEntries(
+        Object.entries(o).filter(v => ![undefined, null, NaN].includes(v[1]))
+    );
 }

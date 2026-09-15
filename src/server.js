@@ -1,20 +1,36 @@
 import express, { json, text } from "express";
-import { Endpoints, getConfig, OTP_CONFIG_FILE } from "./values.js";
+import { Endpoints, getConfig } from "./values.js";
 import { generateSecret, generateURI, verify } from "otplib";
 import backup from "./core/backup.js";
 import { createHash } from "node:crypto";
-import { WritableBit } from "@deflexable/bit-stream";
 import { one_mb } from "./utils.js";
 import { resolve as resolveAsPath } from 'path';
 import restore from "./core/restore.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { toDataURL } from "qrcode";
+import { segmentBinary } from "segment-binary";
 
-export default async function start_server({ port, middleware, get_ip }) {
+export default async function start_server({ port, middleware, get_ip, logging }) {
     const app = express();
     app.disable("x-powered-by");
 
     if (typeof middleware === 'function') app.use(middleware);
+
+    if (typeof get_ip !== 'function') {
+        get_ip = req => req?.ips?.[0];
+    }
+
+    const logConsole = (...args) => {
+        if (logging) console.log(...args);
+    }
+
+    const warnConsole = (...args) => {
+        if (logging) console.warn(...args);
+    }
+
+    const errorConsole = (...args) => {
+        if (logging) console.error(...args);
+    }
 
     [
         json({ type: '*/json', limit: '100MB' }),
@@ -27,10 +43,10 @@ export default async function start_server({ port, middleware, get_ip }) {
 
     const TIP_HEADER = Buffer.from('H', 'utf8');
     const BASE_BODY = Buffer.from('B', 'utf8');
-    const CLEANUP_TIMER = 60_000 * 10;
+    const CLEANUP_TIMER = 60_000 * 30;
     const MAX_RESIDUE_BUF_SIZE = one_mb * 500;
 
-    const secret_path = resolveAsPath(process.cwd(), './'.concat(OTP_CONFIG_FILE));
+    const secret_path = resolveAsPath(process.cwd(), './.mosquito-totp-code.txt');
 
     let OTP_SECRET = await readFile(secret_path, 'utf8').catch(() => '');
 
@@ -41,13 +57,14 @@ export default async function start_server({ port, middleware, get_ip }) {
 
         const otp_url =
             generateURI({
-                issuer: 'BrainbehindX Inc.',
+                issuer: 'BrainbehindX',
                 label: 'Mosquito Transport',
                 secret: OTP_SECRET
             });
 
         await writeFile(resolveAsPath(process.cwd(), './.mosquito-totp-url.txt'), otp_url, 'utf8');
         await writeFile(resolveAsPath(process.cwd(), './.mosquito-totp-qrcode.txt'), await toDataURL(otp_url), 'utf8');
+        console.log('initialized TOTP ✅')
     }
 
     const externalConfig = await getConfig();
@@ -64,6 +81,8 @@ export default async function start_server({ port, middleware, get_ip }) {
     const handleRouter = (callback) =>
         async (req, res) => {
             try {
+                console.log('route/', req.url);
+                return callback?.(req, res);
                 const { passkey } = req.headers;
 
                 const otpResult = await verify({ secret: OTP_SECRET, token: passkey });
@@ -79,7 +98,7 @@ export default async function start_server({ port, middleware, get_ip }) {
                         };
                     }
 
-                    if (++IpAddressMap[ip_address].counts >= REQUEST_PER_30) {
+                    if (++IpAddressMap[ip_address].counts > REQUEST_PER_30) {
                         res.status(429).send('Too many requests');
                         return;
                     }
@@ -98,9 +117,9 @@ export default async function start_server({ port, middleware, get_ip }) {
                     res.status(200).send({ result });
                 }
             } catch (error) {
-                if (!res.headersSent) {
-                    res.status(501).send(`${error}`);
-                }
+                errorConsole('fatal err:', error);
+                if (res.headersSent) throw error;
+                res.status(501).send(`${error}`);
             }
         };
 
@@ -108,41 +127,57 @@ export default async function start_server({ port, middleware, get_ip }) {
 
     const AFRESH_MESSAGE = 'Destroying stream to start afresh';
 
+    const encodeTipMessage = (tip, main) =>
+        segmentBinary(Buffer.concat([tip, main]));
+
     app.use(
-        router.post(
+        router.get(
             Endpoints.backup,
             handleRouter(async (req, res) => {
                 let { storage, database, offset = '' } = req.headers;
-                database = JSON.parse(database);
+                if (database) {
+                    database = JSON.parse(database);
+                } else database = undefined;
                 offset = (offset * 1) || 0;
 
+                console.log('storage:', storage, ' storagex:', typeof req.headers.storage);
                 const hash_id =
                     createHash('sha256')
-                        .update(JSON.stringify([storage, database]), 'utf8')
+                        .update(JSON.stringify([storage || '', database || '']), 'utf8')
                         .digest('base64').substring(0, 90);
 
                 const max_residue_size = Math.max(res.writableHighWaterMark, MAX_RESIDUE_BUF_SIZE);
 
                 const prevInstance = BACKUP_PROCESS[hash_id];
 
-                if (prevInstance && !prevInstance.disconnected) {
-                    res.status(501).send('Another client is currently extracting backup with the same arguments, wait for their disconnection or completion before retrying');
-                    return;
-                }
+                logConsole('backup; started hash_id:', hash_id, ' hasB4:', !!prevInstance);
 
-                clearTimeout(prevInstance.timer);
-                prevInstance.timer = undefined;
+                if (prevInstance) {
+                    if (prevInstance.response) {
+                        res.status(501).send('Another client is currently extracting backup with the same arguments, wait for their disconnection or completion before retrying');
+                        return;
+                    }
+
+                    clearTimeout(prevInstance.timer);
+                    prevInstance.timer = undefined;
+                }
 
                 const pauseStreaming = () => {
                     const p = BACKUP_PROCESS[hash_id];
-                    if (p && !p.signal.stopage)
+                    if (p && !p.signal.stopage) {
                         p.signal.stopage =
                             new Promise(resolve => {
                                 p.signal.onDrain = resolve;
                             });
+
+                        logConsole('backup; pauseStreaming');
+                    } else {
+                        // logConsole('backup; pauseStreaming already');
+                    }
                 }
 
                 const doDrain = () => {
+                    logConsole('backup; doDrain');
                     if (hasDisconnect) return;
 
                     try {
@@ -156,10 +191,11 @@ export default async function start_server({ port, middleware, get_ip }) {
                     const p = BACKUP_PROCESS[hash_id];
                     if (p) {
                         p._root_data.ended = true;
-                        p.stream2.destroy(new Error(AFRESH_MESSAGE));
+                        p.stream.destroy(new Error(AFRESH_MESSAGE));
                         doDrain();
 
                         delete BACKUP_PROCESS[hash_id];
+                        logConsole('backup; cleanup');
                     }
                 }
 
@@ -169,7 +205,7 @@ export default async function start_server({ port, middleware, get_ip }) {
                     hasDisconnect = true;
                     const p = BACKUP_PROCESS[hash_id];
                     if (p) {
-                        p.disconnected = true;
+                        p.response = undefined;
                         p.timer = setTimeout(doCleanUp, CLEANUP_TIMER);
                     }
                     pauseStreaming();
@@ -177,35 +213,33 @@ export default async function start_server({ port, middleware, get_ip }) {
 
                 res.on('drain', doDrain);
 
+                logConsole('backup; offset:', offset, ' sent:', prevInstance?.sent, ' buf:', prevInstance?.buf?.byteLength);
+
                 if (
                     prevInstance &&
                     offset > 0 &&
                     prevInstance.sent >= offset &&
                     prevInstance.buf.byteLength >= prevInstance.sent - offset
                 ) {
+                    logConsole('backup; resuming offset:', offset);
+
                     res.writeHead(200, { ['fs-strategy']: 'APPEND' });
 
-                    prevInstance.disconnected = undefined;
+                    const residueBuf = prevInstance.buf.subarray(prevInstance.buf.byteLength - (prevInstance.sent - offset));
+                    const residue = encodeTipMessage(BASE_BODY, residueBuf);
 
-                    if (res.write(prevInstance.buf.subarray(prevInstance.sent - offset))) {
+                    if (res.write(residue)) {
                         doDrain();
                     } else pauseStreaming();
 
-                    prevInstance.stream.on('data', chunk => {
-                        if (hasDisconnect) return;
-
-                        if (!res.write(chunk)) {
-                            pauseStreaming();
-                        }
-                    });
-
-                    prevInstance.stream.on('end', () => {
+                    if (prevInstance.auto_close) {
+                        if (BACKUP_PROCESS[hash_id])
+                            delete BACKUP_PROCESS[hash_id];
                         res.end();
-                    });
-
-                    prevInstance.stream.on('error', (err) => {
-                        res.destroy(err);
-                    });
+                        logConsole('backup; auto_close');
+                    } else {
+                        prevInstance.response = res;
+                    }
                     return;
                 }
 
@@ -220,11 +254,10 @@ export default async function start_server({ port, middleware, get_ip }) {
                         files: 0,
                         buf: undefined,
                         stream: undefined,
-                        stream2: undefined,
                         _root_data: undefined,
                         signal: { stopage: undefined, onDrain: undefined },
-                        disconnected: false,
-                        timer: undefined
+                        timer: undefined,
+                        response: res
                     });
 
                 let databaseStats = {};
@@ -244,69 +277,63 @@ export default async function start_server({ port, middleware, get_ip }) {
                         }
                     });
 
-                const writable = new WritableBit();
                 const root_info = { ended: false };
 
-                progress.stream = writable;
-                progress.stream2 = stream;
+                progress.stream = stream;
                 progress._root_data = root_info;
 
-                const clientLog = (message) =>
-                    writable.write(
-                        Buffer.concat([
-                            TIP_HEADER,
-                            Buffer.from(`${message || ''}` || getLineLog(`Reading ${convertByteToWord(progress.sent)}, ${progress.docs} documents and ${progress.files} files`), 'utf8')
-                        ])
-                    );
+                const clientLog = (message) => {
+                    const buf = Buffer.from(`${message || ''}` || getLineLog(`Reading ${convertByteToWord(progress.sent)}, ${progress.docs} documents and ${progress.files} files`), 'utf8');
 
-                writable.on('data', chunk => {
+                    return writeResponse(TIP_HEADER, buf);
+                }
+
+                const writeResponse = (tip, main) =>
+                    progress.response?.write?.(encodeTipMessage(tip, main));
+
+                stream.on('data', chunk => {
                     if (root_info.ended) return;
 
                     progress.sent += chunk.byteLength;
 
+                    const bufData = Buffer.concat([progress.buf, chunk].filter(v => v));
                     progress.buf =
-                        Buffer.concat([progress.buf, chunk].filter(v => v))
-                            .subarray(0, max_residue_size);
+                        bufData.byteLength > max_residue_size
+                            ? bufData.subarray(bufData.byteLength - max_residue_size)
+                            : bufData;
 
-                    if (hasDisconnect) return;
-
-                    if (!res.write(chunk)) {
+                    if (!writeResponse(BASE_BODY, chunk)) {
                         pauseStreaming();
                     }
                 });
 
-                writable.on('end', () => {
+                stream.on('end', () => {
                     if (!root_info.ended && BACKUP_PROCESS[hash_id])
                         delete BACKUP_PROCESS[hash_id];
-                    res.end();
+
+                    if (progress.response) {
+                        if (!root_info.ended && BACKUP_PROCESS[hash_id])
+                            delete BACKUP_PROCESS[hash_id];
+
+                        clientLog(`\nwritten database: ${JSON.stringify(databaseStats, null, 2)}\n`);
+                        progress?.response?.end?.();
+                    } else {
+                        progress.auto_close = true;
+                        logConsole('backup; setting auto_close');
+                    }
                 });
 
-                writable.on('error', (err) => {
+                stream.on('error', err => {
+                    logConsole('backup; error:', err);
+
                     if (
                         !err?.message?.includes?.(AFRESH_MESSAGE) &&
                         !root_info.ended &&
                         BACKUP_PROCESS[hash_id]
                     ) delete BACKUP_PROCESS[hash_id];
-                    res.destroy(err);
-                });
 
-                stream.on('data', chunk => {
-                    writable.write(
-                        Buffer.concat([
-                            BASE_BODY,
-                            chunk
-                        ])
-                    );
-                });
-
-                stream.on('end', () => {
-                    clientLog(`\nwritten database: ${JSON.stringify(databaseStats, null, 2)}`);
-                    writable.end();
-                });
-
-                stream.on('error', err => {
-                    clientLog(`\n${err}`);
-                    writable.destroy(err);
+                    clientLog(`\n${err}\n`);
+                    progress?.response?.destroy(err);
                 });
             })
         )
@@ -319,9 +346,13 @@ export default async function start_server({ port, middleware, get_ip }) {
             Endpoints.restore,
             handleRouter(async (req, res) => {
                 let { storage, database, file_id } = req.headers;
-                database = JSON.parse(database);
+                if (database) {
+                    database = JSON.parse(database);
+                } else database = undefined;
 
                 const prevInstance = RESTORE_PROCESS[file_id];
+
+                logConsole('restore; starting writing file_id:', file_id);
 
                 if (prevInstance) {
                     if (!prevInstance.disconnected) {
@@ -329,15 +360,9 @@ export default async function start_server({ port, middleware, get_ip }) {
                         return;
                     }
 
-                    res.writeHead(200, {
-                        'fs-start': prevInstance.size || 0
-                    });
-
                     prevInstance.disconnected = undefined;
                     clearTimeout(prevInstance.timer);
                 } else {
-                    res.writeHead(200);
-
                     const readable = restore({
                         password: externalConfig?.password,
                         storage: storage || externalConfig?.storage,
@@ -363,7 +388,6 @@ export default async function start_server({ port, middleware, get_ip }) {
 
                     RESTORE_PROCESS[file_id] = {
                         size: 0,
-                        stream: undefined,
                         disconnected: undefined,
                         stream: readable,
                         timer: undefined,
@@ -375,6 +399,13 @@ export default async function start_server({ port, middleware, get_ip }) {
                     };
                 }
 
+                logConsole('restore; starting at:', prevInstance?.size || 0);
+
+                res.writeEarlyHints({
+                    'link': '</styles.css>; rel=preload; as=style',
+                    'fs-start': `${prevInstance?.size || 0}`
+                });
+
                 const currentInstance = RESTORE_PROCESS[file_id];
 
                 currentInstance.triggers.onProgress = (s) => {
@@ -385,12 +416,12 @@ export default async function start_server({ port, middleware, get_ip }) {
                 }
 
                 currentInstance.triggers.onComplete = (v) => {
-                    res.write(`\n${JSON.stringify(v, null, 2)}`, 'utf8');
+                    res.write(`\n${JSON.stringify(v, null, 2)}\n`, 'utf8');
                     res.end();
                 }
 
                 currentInstance.triggers.onError = (err) => {
-                    res.write(`\nError: ${err}`, 'utf8');
+                    res.write(`\n${err}`, 'utf8');
                     res.destroy(err);
                 }
 
@@ -405,7 +436,7 @@ export default async function start_server({ port, middleware, get_ip }) {
                     p.stream.end();
                 });
 
-                req.on('close', () => {
+                req.on('aborted', () => {
                     const p = RESTORE_PROCESS[file_id];
                     if (p) {
                         p.disconnected = true;

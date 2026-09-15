@@ -37,7 +37,7 @@ export default function backup(config) {
                     throw `invalid mongodb url format: ${dbUrl}`;
 
                 for (const [dbName, col] of Object.entries(dbNameObj)) {
-                    if (!isValidDbName(dbName))
+                    if (dbName !== '*' && !isValidDbName(dbName))
                         throw `invalid dbName: "${dbName}"`;
 
                     if (col !== '*') {
@@ -119,7 +119,7 @@ export default function backup(config) {
 
                             while (canLoadMore) {
                                 await wait(7); // pause for garbage collection
-                                if (signal.stopage) await signal.stopage;
+                                if (signal?.stopage) await signal.stopage;
                                 const data =
                                     await dbNameInstance.collection(colName).find({})
                                         .skip(offset).limit(DOC_LIMITER).toArray();
@@ -133,7 +133,8 @@ export default function backup(config) {
                                     databaseMap[dbUrl][dbName] = {};
                                 if (!databaseMap[dbUrl][dbName][colName])
                                     databaseMap[dbUrl][dbName][colName] = 0;
-                                ++databaseMap[dbUrl][dbName][colName];
+
+                                databaseMap[dbUrl][dbName][colName] += data.length;
 
                                 updateStats();
                                 data.forEach(doc => {
@@ -192,9 +193,9 @@ export default function backup(config) {
                                 reject(err);
                             });
                         });
-                        
+
                         await wait(1); // pause for garbage collection
-                        if (signal.stopage) await signal.stopage;
+                        if (signal?.stopage) await signal.stopage;
                     } else {
                         const files = await readdir(dir);
                         if (files.length) {
@@ -213,7 +214,7 @@ export default function backup(config) {
 
             stream.end();
         } catch (error) {
-            stream.destroy(new Error(`${error}`));
+            stream.destroy(error instanceof Error ? error : new Error(`${error}`));
         }
     })();
 

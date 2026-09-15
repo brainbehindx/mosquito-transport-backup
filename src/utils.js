@@ -17,8 +17,12 @@ export const Validator = {
         return Object.prototype.toString.call(o) === '[object Object]'
             && Object.getPrototypeOf(o) === Object.prototype;
     },
-    HTTP: a => /^(http:\/\/)(localhost|(\d{1,3}\.){3}\d{1,3}|([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})(:\d+)?(\/[^\s]*)?$/.test(a),
-    HTTPS: a => /^(https:\/\/)(localhost|(\d{1,3}\.){3}\d{1,3}|([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})(:\d+)?(\/[^\s]*)?$/.test(a),
+    HTTP: a =>
+        typeof a === 'string' &&
+        /^(http:\/\/)(localhost|(\d{1,3}\.){3}\d{1,3}|([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})(:\d+)?(\/[^\s]*)?$/.test(a),
+    HTTPS: a =>
+        typeof a === 'string' &&
+        /^(https:\/\/)(localhost|(\d{1,3}\.){3}\d{1,3}|([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})(:\d+)?(\/[^\s]*)?$/.test(a),
     LINK: a => Validator.HTTP(a) || Validator.HTTPS(a)
 };
 

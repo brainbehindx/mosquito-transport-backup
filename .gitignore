@@ -133,3 +133,11 @@ package-lock.json
 yarn.lock
 
 .DS_Store
+
+# testing
+test-server.js
+
+# mosquito credentials
+.mosquito-totp-qrcode.txt
+.mosquito-totp-url.txt
+.mosquito-totp-code.txt

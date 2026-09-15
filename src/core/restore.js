@@ -102,10 +102,6 @@ export default function restore(config) {
                     }
                     const thisUrl = dbUrlMap[dbUrl];
 
-                    if (installionStats.database[thisUrl][dbName]) {
-                        ++installionStats.database[thisUrl][dbName];
-                    } else installionStats.database[thisUrl][dbName] = 1;
-
                     const { _id, ...docRest } = deserialize(thisElem, {
                         bsonRegExp: true,
                         promoteLongs: false,
@@ -117,6 +113,15 @@ export default function restore(config) {
                         { ...docRest },
                         { upsert: true }
                     );
+
+                    if (!installionStats.database[thisUrl][dbName])
+                        installionStats.database[thisUrl][dbName] = {};
+
+                    if (!installionStats.database[thisUrl][dbName][collection])
+                        installionStats.database[thisUrl][dbName][collection] = 0;
+
+                    ++installionStats.database[thisUrl][dbName][collection];
+
                     if (!(++installionStats.totalWrittenDocuments % 200)) {
                         await wait(7); // pause for garbage collection
                     }

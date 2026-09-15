@@ -16,8 +16,6 @@ export const BLOCKS_IDENTIFIERS = {
     STORAGE_FILE: '==>[FILE]:'
 };
 
-export const OTP_CONFIG_FILE = 'mosquito.config.js';
-
 export const getConfig = () =>
     import(resolveAsPath(process.cwd(), './mosquito.config.js'))
         .catch(() => ({}));
