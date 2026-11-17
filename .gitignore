@@ -133,6 +133,7 @@ package-lock.json
 yarn.lock
 
 .DS_Store
+.yarnrc.yml
 
 # testing
 test-server.js

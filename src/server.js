@@ -93,10 +93,7 @@ export default async function start_server({ port, middleware, get_ip, logging }
                     UsedPasskey.delete(passkey);
                 }, 60_000);
 
-                const result = await callback?.(req, res);
-                if (result !== undefined || !res.headersSent) {
-                    res.status(200).send({ result });
-                }
+                await callback?.(req, res);
             } catch (error) {
                 errorConsole('fatal err:', error);
                 if (res.headersSent) throw error;
@@ -121,7 +118,6 @@ export default async function start_server({ port, middleware, get_ip, logging }
                 } else database = undefined;
                 offset = (offset * 1) || 0;
 
-                console.log('storage:', storage, ' storagex:', typeof req.headers.storage);
                 const hash_id =
                     createHash('sha256')
                         .update(JSON.stringify([storage || '', database || '']), 'utf8')
@@ -151,14 +147,14 @@ export default async function start_server({ port, middleware, get_ip, logging }
                                 p.signal.onDrain = resolve;
                             });
 
-                        logConsole('backup; pauseStreaming');
+                        // logConsole('backup; pauseStreaming');
                     } else {
                         // logConsole('backup; pauseStreaming already');
                     }
                 }
 
                 const doDrain = () => {
-                    logConsole('backup; doDrain');
+                    // logConsole('backup; doDrain');
                     if (hasDisconnect) return;
 
                     try {
@@ -263,14 +259,14 @@ export default async function start_server({ port, middleware, get_ip, logging }
                 progress.stream = stream;
                 progress._root_data = root_info;
 
-                const clientLog = (message) => {
+                const clientLog = (message, callback) => {
                     const buf = Buffer.from(`${message || ''}` || getLineLog(`Reading ${convertByteToWord(progress.sent)}, ${progress.docs} documents and ${progress.files} files`), 'utf8');
 
-                    return writeResponse(TIP_HEADER, buf);
+                    return writeResponse(TIP_HEADER, buf, callback);
                 }
 
-                const writeResponse = (tip, main) =>
-                    progress.response?.write?.(encodeTipMessage(tip, main));
+                const writeResponse = (tip, main, callback) =>
+                    progress.response?.write?.(encodeTipMessage(tip, main), callback);
 
                 stream.on('data', chunk => {
                     if (root_info.ended) return;
@@ -313,8 +309,9 @@ export default async function start_server({ port, middleware, get_ip, logging }
                         BACKUP_PROCESS[hash_id]
                     ) delete BACKUP_PROCESS[hash_id];
 
-                    clientLog(`\n${err}\n`);
-                    progress?.response?.destroy(err);
+                    clientLog(`\n${err}\n`, () => {
+                        progress?.response?.destroy(err);
+                    });
                 });
             })
         )
@@ -350,16 +347,19 @@ export default async function start_server({ port, middleware, get_ip, logging }
                         onMongodbOption: externalConfig?.onMongodbOption,
                         database: database || externalConfig?.database,
                         onProgress: s => {
+                            // logConsole('restoration onProgress:', s);
                             if (RESTORE_PROCESS[file_id])
                                 RESTORE_PROCESS[file_id].triggers.onProgress?.(s);
                         },
                         onComplete: (r) => {
+                            logConsole('restoration onComplete:', r);
                             if (RESTORE_PROCESS[file_id]) {
                                 RESTORE_PROCESS[file_id].triggers.onComplete?.(r);
                                 delete RESTORE_PROCESS[file_id];
                             }
                         },
                         onError: err => {
+                            logConsole('restoration onError:', err);
                             if (RESTORE_PROCESS[file_id]) {
                                 RESTORE_PROCESS[file_id].triggers.onError?.(err);
                                 delete RESTORE_PROCESS[file_id];
@@ -402,8 +402,9 @@ export default async function start_server({ port, middleware, get_ip, logging }
                 }
 
                 currentInstance.triggers.onError = (err) => {
-                    res.write(`\n${err}`, 'utf8');
-                    res.destroy(err);
+                    res.write(`\n${err}`, 'utf8', () => {
+                        res.destroy(err);
+                    });
                 }
 
                 req.on('data', buf => {
@@ -413,11 +414,13 @@ export default async function start_server({ port, middleware, get_ip, logging }
                 });
 
                 req.on('end', () => {
+                    logConsole('restoration ended');
                     const p = RESTORE_PROCESS[file_id];
                     p.stream.end();
                 });
 
                 req.on('aborted', () => {
+                    logConsole('restoration aborted');
                     const p = RESTORE_PROCESS[file_id];
                     if (p) {
                         p.disconnected = true;

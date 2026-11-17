@@ -64,13 +64,13 @@ export default function restore(config) {
             } else {
                 const BLOCK_ID = `${bitIndex}`;
                 if (lastBlocks.headers === undefined)
-                    throw `no blocks identifier at block_id (${BLOCK_ID})`;
+                    throw new Error(`no blocks identifier at block_id (${BLOCK_ID})`);
                 const prevHeader = lastBlocks.headers;
 
                 if (prevHeader === BLOCKS_IDENTIFIERS.DB_URL) {
                     lastBlocks.database = { dbUrl: thisElem.toString('utf8') };
                     if (lastBlocks.storage.path)
-                        throw `(${BLOCKS_IDENTIFIERS.DB_URL}) block should come first before (${BLOCKS_IDENTIFIERS.STORAGE_FILE_PATH})`;
+                        throw new Error(`(${BLOCKS_IDENTIFIERS.DB_URL}) block should come first before (${BLOCKS_IDENTIFIERS.STORAGE_FILE_PATH})`);
                 } else if (prevHeader === BLOCKS_IDENTIFIERS.DB_NAME) {
                     lastBlocks.database.dbName = thisElem.toString('utf8');
                 } else if (prevHeader === BLOCKS_IDENTIFIERS.COLLECTION) {
@@ -78,11 +78,11 @@ export default function restore(config) {
                 } else if (prevHeader === BLOCKS_IDENTIFIERS.DOCUMENT) {
                     const { collection, dbName, dbUrl } = lastBlocks.database;
                     if (typeof dbUrl !== 'string' || !dbUrl.trim())
-                        throw `no previous ${BLOCKS_IDENTIFIERS.DB_URL} was registered at block_id ${BLOCK_ID}`;
+                        throw new Error(`no previous ${BLOCKS_IDENTIFIERS.DB_URL} was registered at block_id ${BLOCK_ID}`);
                     if (typeof dbName !== 'string' || !dbName.trim())
-                        throw `no previous ${BLOCKS_IDENTIFIERS.DB_NAME} was registered at block_id ${BLOCK_ID}`;
+                        throw new Error(`no previous ${BLOCKS_IDENTIFIERS.DB_NAME} was registered at block_id ${BLOCK_ID}`);
                     if (typeof collection !== 'string' || !collection.trim())
-                        throw `no previous ${BLOCKS_IDENTIFIERS.COLLECTION} was registered at block_id ${BLOCK_ID}`;
+                        throw new Error(`no previous ${BLOCKS_IDENTIFIERS.COLLECTION} was registered at block_id ${BLOCK_ID}`);
 
                     if (!mongodbInstances[dbUrl]) {
                         const mongoHandle = onMongodbOption?.(dbUrl);
@@ -107,7 +107,7 @@ export default function restore(config) {
                         promoteLongs: false,
                         promoteValues: false
                     });
-                    if (!_id) throw `invalid doc found in block_id ${BLOCK_ID}`;
+                    if (!_id) throw new Error(`invalid doc found in block_id ${BLOCK_ID}`);
                     await mongodbInstances[dbUrl].db(dbName).collection(collection).replaceOne(
                         { _id },
                         { ...docRest },
@@ -146,7 +146,7 @@ export default function restore(config) {
                         lastBlocks.storage = { path };
                     } else if (prevHeader === BLOCKS_IDENTIFIERS.STORAGE_FILE) {
                         if (typeof lastBlocks.storage.path !== 'string')
-                            throw `no previous ${BLOCKS_IDENTIFIERS.STORAGE_FILE_PATH} was registered at block_id ${BLOCK_ID}`;
+                            throw new Error(`no previous ${BLOCKS_IDENTIFIERS.STORAGE_FILE_PATH} was registered at block_id ${BLOCK_ID}`);
 
                         if (lastBlocks.storage.file) {
                             lastBlocks.storage.file.write(thisElem);
@@ -165,7 +165,7 @@ export default function restore(config) {
                             };
                             updateStats();
                         };
-                    } else throw `unknown block identifier "${prevHeader}" at block_id ${BLOCK_ID}`;
+                    } else throw new Error(`unknown block identifier "${prevHeader}" at block_id ${BLOCK_ID}`);
                 }
                 lastBlocks.headers = undefined;
             }

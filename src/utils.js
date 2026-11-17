@@ -89,19 +89,18 @@ const CachedMap = {};
 const cache_expiry = 60_000 * 60;
 
 const hashPassword = password => {
-    if (CachedMap[password]) return CachedMap[password][0];
+    if (CachedMap[password]) return CachedMap[password];
 
     const result = [
         createHash('sha256').update(password).digest('base64').substring(0, 32),
         createHash('md5').update(password).digest('base64').substring(0, 16)
     ];
 
-    return CachedMap[password] = [
-        result,
-        setTimeout(() => {
-            delete CachedMap[password];
-        }, cache_expiry)
-    ];
+    setTimeout(() => {
+        delete CachedMap[password];
+    }, cache_expiry)
+
+    return CachedMap[password] = result;
 };
 
 // Encrypt function
