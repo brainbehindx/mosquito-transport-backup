@@ -18,4 +18,5 @@ export const BLOCKS_IDENTIFIERS = {
 
 export const getConfig = () =>
     import(resolveAsPath(process.cwd(), './mosquito.config.js'))
+        .then(r => r.config)
         .catch(() => ({}));
