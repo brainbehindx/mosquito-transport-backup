@@ -14,6 +14,11 @@ export default async function start_server({ port, middleware, get_ip, logging }
 
     if (typeof middleware === 'function') app.use(middleware);
 
+    if (typeof get_ip === 'string') {
+        const node = get_ip;
+        get_ip = req => req?.headers?.[node];
+    }
+
     if (typeof get_ip !== 'function') {
         get_ip = req => req?.ips?.[0];
     }
@@ -68,15 +73,13 @@ export default async function start_server({ port, middleware, get_ip, logging }
                     const ip_address = get_ip(req);
 
                     if (!IpAddressMap[ip_address]) {
-                        IpAddressMap[ip_address] = {
-                            counts: 0,
-                            timer: setTimeout(() => {
-                                delete IpAddressMap[ip_address];
-                            }, 60_000 * 30)
-                        };
+                        IpAddressMap[ip_address] = 0;
+                        setTimeout(() => {
+                            delete IpAddressMap[ip_address];
+                        }, 60_000 * 30)
                     }
 
-                    if (++IpAddressMap[ip_address].counts > REQUEST_PER_30) {
+                    if (++IpAddressMap[ip_address] > REQUEST_PER_30) {
                         res.status(429).send('Too many requests');
                         return;
                     }
