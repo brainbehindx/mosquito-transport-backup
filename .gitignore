@@ -141,3 +141,6 @@ test-server.js
 .mosquito-totp-qrcode.txt
 .mosquito-totp-url.txt
 .mosquito-totp-code.txt
+
+# test config
+mosquito.config.js
