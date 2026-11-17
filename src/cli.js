@@ -47,7 +47,7 @@ const throwArg = (fields = [], param) => {
 if ('--print' in argsObj) {
     throwArg([], '--print');
 
-    printTOTP(await getTOTP_Secret(false), argsObj['--print']);
+    await printTOTP(await getTOTP_Secret(false), argsObj['--print'] || undefined);
 } else if ('--port' in argsObj) {
     throwArg(['ip', 'logging'], '--port');
 

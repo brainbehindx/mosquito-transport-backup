@@ -14,11 +14,11 @@ export const getTOTP_Secret = async (alwaysPrint) => {
         console.warn('initializing TOTP...');
 
         if ([true, undefined].includes(alwaysPrint))
-            printTOTP(OTP_SECRET);
+            await printTOTP(OTP_SECRET);
 
         console.log('initialized TOTP ✅');
     } else if (alwaysPrint) {
-        printTOTP(OTP_SECRET);
+        await printTOTP(OTP_SECRET);
     }
 
     return OTP_SECRET;
@@ -31,7 +31,7 @@ export const getTOTP_URL = (secret) =>
         secret
     });
 
-export const printTOTP = (secret, type) => {
+export const printTOTP = async (secret, type) => {
     const otp_url = getTOTP_URL(secret);
 
     if (['url', undefined].includes(type))
@@ -39,6 +39,6 @@ export const printTOTP = (secret, type) => {
 
     if (['qr', undefined].includes(type)) {
         console.log('TOTP QR-CODE:\n');
-        console.log(toString(otp_url, { type: 'terminal', small: true }));
+        console.log(await toString(otp_url, { type: 'terminal', small: true }));
     }
 }

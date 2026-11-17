@@ -241,7 +241,7 @@ export default async function start_server({ port, middleware, get_ip, logging }
 
                 const stream =
                     backup({
-                        password: externalConfig?.password,
+                        password: externalConfig?.password || process.env.password,
                         storage: storage || externalConfig?.storage,
                         onMongodbOption: externalConfig?.onMongodbOption,
                         database: database || externalConfig?.database,
@@ -342,7 +342,7 @@ export default async function start_server({ port, middleware, get_ip, logging }
                     clearTimeout(prevInstance.timer);
                 } else {
                     const readable = restore({
-                        password: externalConfig?.password,
+                        password: externalConfig?.password || process.env.password,
                         storage: storage || externalConfig?.storage,
                         onMongodbOption: externalConfig?.onMongodbOption,
                         database: database || externalConfig?.database,
