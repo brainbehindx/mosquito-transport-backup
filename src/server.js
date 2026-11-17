@@ -1,14 +1,12 @@
 import express, { json, text } from "express";
 import { Endpoints, getConfig } from "./values.js";
-import { generateSecret, generateURI, verify } from "otplib";
+import { verify } from "otplib";
 import backup from "./core/backup.js";
 import { createHash } from "node:crypto";
 import { one_mb } from "./utils.js";
-import { resolve as resolveAsPath } from 'path';
 import restore from "./core/restore.js";
-import { readFile, writeFile } from "node:fs/promises";
-import { toDataURL } from "qrcode";
 import { segmentBinary } from "segment-binary";
+import { getTOTP_Secret } from "./totp.js";
 
 export default async function start_server({ port, middleware, get_ip, logging }) {
     const app = express();
@@ -46,26 +44,7 @@ export default async function start_server({ port, middleware, get_ip, logging }
     const CLEANUP_TIMER = 60_000 * 30;
     const MAX_RESIDUE_BUF_SIZE = one_mb * 500;
 
-    const secret_path = resolveAsPath(process.cwd(), './.mosquito-totp-code.txt');
-
-    let OTP_SECRET = await readFile(secret_path, 'utf8').catch(() => '');
-
-    if (!OTP_SECRET) {
-        OTP_SECRET = generateSecret();
-        await writeFile(secret_path, OTP_SECRET, 'utf8');
-        console.warn('initializing TOTP...');
-
-        const otp_url =
-            generateURI({
-                issuer: 'BrainbehindX',
-                label: 'Mosquito Transport',
-                secret: OTP_SECRET
-            });
-
-        await writeFile(resolveAsPath(process.cwd(), './.mosquito-totp-url.txt'), otp_url, 'utf8');
-        await writeFile(resolveAsPath(process.cwd(), './.mosquito-totp-qrcode.txt'), await toDataURL(otp_url), 'utf8');
-        console.log('initialized TOTP ✅')
-    }
+    let OTP_SECRET = await getTOTP_Secret();
 
     const externalConfig = await getConfig();
 
@@ -82,7 +61,6 @@ export default async function start_server({ port, middleware, get_ip, logging }
         async (req, res) => {
             try {
                 console.log('route/', req.url);
-                return callback?.(req, res);
                 const { passkey } = req.headers;
 
                 const otpResult = await verify({ secret: OTP_SECRET, token: passkey });

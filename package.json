@@ -13,7 +13,7 @@
     "url": "https://github.com/brainbehindx/mosquito-transport-backup/issues"
   },
   "bin": {
-    "mosquito-data": "./src/cli.js"
+    "zerobase": "./src/cli.js"
   },
   "repository": {
     "type": "git",

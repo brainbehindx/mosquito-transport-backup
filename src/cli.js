@@ -10,6 +10,7 @@ import restore from './core/restore.js';
 import { stat } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createHash } from 'node:crypto';
+import { getTOTP_Secret, printTOTP } from './totp.js';
 
 let startTime = Date.now();
 const LOCAL_MARKER = {
@@ -22,15 +23,18 @@ const externalConfig = await getConfig();
 
 const { onMongodbOption } = externalConfig || {};
 
-const getArgs = () =>
-    Object.fromEntries(
-        process.argv
-            .slice(2)
-            .map(e => {
-                const [k, ...v] = e.split('=');
-                return [k, v.join('=')];
-            })
-    );
+const args =
+    process.argv
+        .slice(2)
+        .map(e => {
+            const [k, ...v] = e.split('=');
+            return [k, v.join('=')];
+        });
+
+if (args.length === 1 && args[0][0] === '--print') {
+    printTOTP(await getTOTP_Secret(false), args[0][1] || undefined);
+    process.exit();
+}
 
 const {
     storage,
@@ -39,7 +43,7 @@ const {
     db_url,
     db_name,
     col
-} = { ...externalConfig, ...process.env, ...getArgs() };
+} = { ...externalConfig, ...process.env, ...Object.fromEntries(args) };
 
 const read = readFrom === LOCAL_MARKER.description ? LOCAL_MARKER : readFrom;
 const write = writeTo === LOCAL_MARKER.description ? LOCAL_MARKER : writeTo;
