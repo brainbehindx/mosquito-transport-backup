@@ -1,5 +1,4 @@
 import { parse } from 'path';
-import { createCipheriv, createDecipheriv, createHash } from 'node:crypto';
 
 export const one_mb = 1024 * 1024,
     one_gb = one_mb * 1024;
@@ -82,44 +81,4 @@ export function isValidColName(name) {
         !invalidChars.test(name) &&
         !name.startsWith('system.') &&
         !RESERVED_DB.includes(name);
-}
-
-const algorithm = 'aes-256-cbc';
-const CachedMap = {};
-const cache_expiry = 60_000 * 60;
-
-const hashPassword = password => {
-    if (CachedMap[password]) return CachedMap[password];
-
-    const result = [
-        createHash('sha256').update(password).digest('base64').substring(0, 32),
-        createHash('md5').update(password).digest('base64').substring(0, 16)
-    ];
-
-    setTimeout(() => {
-        delete CachedMap[password];
-    }, cache_expiry)
-
-    return CachedMap[password] = result;
 };
-
-// Encrypt function
-export function encryptData(data, password) {
-    const [key, iv] = hashPassword(password);
-    const cipher = createCipheriv(algorithm, key, iv);
-    return Buffer.concat([
-        cipher.update(data),
-        cipher.final()
-    ]);
-}
-
-// Decrypt function
-export function decryptData(data, password) {
-    const [key, iv] = hashPassword(password);
-
-    const decipher = createDecipheriv(algorithm, key, iv);
-    return Buffer.concat([
-        decipher.update(data),
-        decipher.final()
-    ]);
-}

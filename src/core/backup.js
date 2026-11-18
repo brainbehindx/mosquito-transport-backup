@@ -1,14 +1,15 @@
 import { MongoClient } from "mongodb";
 import { serialize } from 'mongodb/lib/bson.js';
-import { encryptData, isPath, isValidColName, isValidDbName, isValidMongoURL, one_mb, RESERVED_DB, Validator, wait } from "../utils.js";
+import { isPath, isValidColName, isValidDbName, isValidMongoURL, one_mb, RESERVED_DB, Validator, wait } from "../utils.js";
 import { readdir, stat } from "fs/promises";
 import { createReadStream } from "fs";
 import { WritableBit } from "@deflexable/bit-stream";
 import { resolve as resolveAsPath } from "path";
 import { BLOCKS_IDENTIFIERS } from "../values.js";
+import { encryptData, hashPassword } from "../crypto/index.js";
 
 const BIT_SIZE = one_mb * 200;
-const DOC_LIMITER = 300;
+const DOC_LIMITER = 50;
 
 /**
  * stream out mosquito-transport data
@@ -21,6 +22,9 @@ export default function backup(config) {
 
     if (password !== undefined && (typeof password !== 'string' || !password))
         throw `expected "password" as non-empty string but got ${password}`;
+
+    if (typeof password === 'string')
+        password = hashPassword(password);
 
     if (onMongodbOption !== undefined && typeof onMongodbOption !== 'function')
         throw `expected "onMongodbOption" to be function but got: ${onMongodbOption}`;
@@ -69,10 +73,10 @@ export default function backup(config) {
 
     (async () => {
         try {
-            const pushBuffer = (buf) => {
+            const pushBuffer = async (buf) => {
                 if (stream.writable) {
                     stream.write(
-                        password ? encryptData(buf, password) : buf
+                        password ? await encryptData(buf, password) : buf
                     );
                 } else throw 'stream ended prematurely';
             }
@@ -89,8 +93,8 @@ export default function backup(config) {
                     const dbInstance = isInstance ? mongoHandle : new MongoClient(dbUrl, { ...mongoHandle });
                     await dbInstance.connect();
 
-                    pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.DB_URL, 'utf8'));
-                    pushBuffer(Buffer.from(`${dbUrl}`, 'utf8'));
+                    await pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.DB_URL, 'utf8'));
+                    await pushBuffer(Buffer.from(`${dbUrl}`, 'utf8'));
 
                     if (dbNameObj === '*') {
                         const dbList =
@@ -104,16 +108,16 @@ export default function backup(config) {
                     for (let [dbName, collections] of Object.entries(dbNameObj)) {
                         const dbNameInstance = dbInstance.db(dbName);
 
-                        pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.DB_NAME, 'utf8'));
-                        pushBuffer(Buffer.from(`${dbName}`, 'utf8'));
+                        await pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.DB_NAME, 'utf8'));
+                        await pushBuffer(Buffer.from(`${dbName}`, 'utf8'));
 
                         if (collections === '*') {
                             collections = (await dbNameInstance.listCollections().toArray()).map(v => v.name);
                         }
 
                         for (const colName of collections) {
-                            pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.COLLECTION, 'utf8'));
-                            pushBuffer(Buffer.from(`${colName}`, 'utf8'));
+                            await pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.COLLECTION, 'utf8'));
+                            await pushBuffer(Buffer.from(`${colName}`, 'utf8'));
 
                             const cursor =
                                 dbNameInstance
@@ -138,13 +142,16 @@ export default function backup(config) {
 
                                     if (!(++readDocuments % DOC_LIMITER)) {
                                         updateStats();
-                                        await wait(7);
                                     }
 
-                                    pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.DOCUMENT, 'utf8'));
-                                    pushBuffer(Buffer.from(serialize(doc)));
+                                    const bufData = Buffer.from(serialize(doc));
+
+                                    await pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.DOCUMENT, 'utf8'));
+                                    await pushBuffer(bufData);
                                 }
                             }
+
+                            await cursor.close();
                         }
                     }
                 }
@@ -161,32 +168,44 @@ export default function backup(config) {
                     const storagePath = dir.substring(storage.length);
 
                     if ((await stat(dir)).isFile()) {
-                        await new Promise((resolve, reject) => {
-                            pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.STORAGE_FILE_PATH, 'utf8'));
-                            pushBuffer(Buffer.from(storagePath, 'utf8'));
+                        await new Promise(async (resolve, reject) => {
+                            await pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.STORAGE_FILE_PATH, 'utf8'));
+                            await pushBuffer(Buffer.from(storagePath, 'utf8'));
 
                             const fileStream = createReadStream(dir);
-                            let thisBits = [],
-                                thisBitsize = 0;
+                            let steadyPromise;
+                            let thisBits = [];
+                            let thisBitsize = 0;
 
-                            const popFile = () => {
-                                if (thisBits.length) {
-                                    pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.STORAGE_FILE, 'utf8'));
-                                    pushBuffer(Buffer.concat(thisBits));
-                                }
-                                thisBitsize = 0;
-                                thisBits = [];
+                            const popFile = async (chunk, end) => {
+                                const prevPromise = steadyPromise;
+
+                                const thisPromise =
+                                    (async () => {
+                                        if (prevPromise) await prevPromise;
+
+                                        if (chunk !== undefined) {
+                                            thisBits.push(chunk);
+                                            if (thisBitsize += chunk.length < BIT_SIZE && !end) return;
+                                        }
+
+                                        if (thisBits.length) {
+                                            await pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.STORAGE_FILE, 'utf8'));
+                                            await pushBuffer(Buffer.concat(thisBits));
+                                        }
+                                        thisBitsize = 0;
+                                        thisBits = [];
+                                    })();
+
+                                return steadyPromise = thisPromise;
                             }
 
                             fileStream.on('data', chunk => {
-                                thisBits.push(chunk);
-                                if (thisBitsize += chunk.length >= BIT_SIZE) {
-                                    popFile();
-                                }
+                                popFile(chunk);
                             });
 
-                            fileStream.on('end', () => {
-                                popFile();
+                            fileStream.on('end', async () => {
+                                await popFile(undefined, true);
                                 ++readFiles;
                                 updateStats();
                                 resolve();
@@ -206,8 +225,8 @@ export default function backup(config) {
                                 await crawlStorage(resolveAsPath(dir, './'.concat(file)));
                             }
                         } else if (storagePath) {
-                            pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.STORAGE_DIRECTORY, 'utf8'));
-                            pushBuffer(Buffer.from(storagePath, 'utf8'));
+                            await pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.STORAGE_DIRECTORY, 'utf8'));
+                            await pushBuffer(Buffer.from(storagePath, 'utf8'));
                         }
                     }
                 }

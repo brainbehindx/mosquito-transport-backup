@@ -1,4 +1,4 @@
-import { decryptData, wait } from "../utils.js";
+import { wait } from "../utils.js";
 import { MongoClient } from "mongodb";
 import { deserialize } from 'mongodb/lib/bson.js';
 import { mkdir } from "fs/promises";
@@ -6,6 +6,7 @@ import { createWriteStream } from "fs";
 import { ReadableBit } from "@deflexable/bit-stream";
 import { dirname, resolve as resolveAsPath } from "path";
 import { BLOCKS_IDENTIFIERS } from "../values.js";
+import { decryptData, hashPassword } from "../crypto/index.js";
 
 /**
  * restore previous mosquito-data backups
@@ -14,7 +15,12 @@ import { BLOCKS_IDENTIFIERS } from "../values.js";
  * @returns {import("@deflexable/bit-stream").ReadableBit}
  */
 export default function restore(config) {
-    const { password, storage, onMongodbOption, onProgress, onComplete, onError } = config;
+    const { storage, onMongodbOption, onProgress, onComplete, onError } = config;
+    let password = config?.password;
+
+    if (typeof password === 'string')
+        password = hashPassword(password);
+
     const streamingBit = new ReadableBit();
     let steadyPromise;
 
@@ -56,7 +62,7 @@ export default function restore(config) {
 
     const handleChunk = async (chunk) => {
         try {
-            const thisElem = password ? decryptData(chunk, password) : chunk;
+            const thisElem = password ? await decryptData(chunk, password) : chunk;
             const thisHeader = !(bitIndex++ % 2) && thisElem.toString('utf8');
 
             if (thisHeader) {
@@ -122,8 +128,8 @@ export default function restore(config) {
 
                     ++installionStats.database[thisUrl][dbName][collection];
 
-                    if (!(++installionStats.totalWrittenDocuments % 200)) {
-                        await wait(7); // pause for garbage collection
+                    if (!(++installionStats.totalWrittenDocuments % 100)) {
+                        await wait(300); // pause for garbage collection
                     }
                     updateStats();
                 } else {
@@ -161,7 +167,7 @@ export default function restore(config) {
                             writeStream.write(thisElem);
                             lastBlocks.storage.file = writeStream;
                             if (!(++installionStats.totalWrittenFiles % 50)) {
-                                await wait(3); // pause for garbage collection
+                                await wait(30); // pause for garbage collection
                             };
                             updateStats();
                         };
