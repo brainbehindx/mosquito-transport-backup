@@ -112,35 +112,38 @@ export default function backup(config) {
                         }
 
                         for (const colName of collections) {
-                            let canLoadMore = true, offset = 0;
-
                             pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.COLLECTION, 'utf8'));
                             pushBuffer(Buffer.from(`${colName}`, 'utf8'));
 
-                            while (canLoadMore) {
-                                await wait(7); // pause for garbage collection
-                                if (signal?.stopage) await signal.stopage;
-                                const data =
-                                    await dbNameInstance.collection(colName).find({})
-                                        .skip(offset).limit(DOC_LIMITER).toArray();
-                                offset += DOC_LIMITER;
-                                canLoadMore = data.length === DOC_LIMITER;
-                                readDocuments += data.length;
+                            const cursor =
+                                dbNameInstance
+                                    .collection(colName)
+                                    .find({})
+                                    .batchSize(DOC_LIMITER);
 
-                                if (!databaseMap[dbUrl])
-                                    databaseMap[dbUrl] = {};
-                                if (!databaseMap[dbUrl][dbName])
-                                    databaseMap[dbUrl][dbName] = {};
-                                if (!databaseMap[dbUrl][dbName][colName])
-                                    databaseMap[dbUrl][dbName][colName] = 0;
+                            if (!databaseMap[dbUrl])
+                                databaseMap[dbUrl] = {};
+                            if (!databaseMap[dbUrl][dbName])
+                                databaseMap[dbUrl][dbName] = {};
+                            if (!databaseMap[dbUrl][dbName][colName])
+                                databaseMap[dbUrl][dbName][colName] = 0;
 
-                                databaseMap[dbUrl][dbName][colName] += data.length;
+                            while (await cursor.hasNext()) {
+                                const doc = await cursor.next();
 
-                                updateStats();
-                                data.forEach(doc => {
+                                if (doc) {
+                                    if (signal?.stopage) await signal.stopage;
+
+                                    ++databaseMap[dbUrl][dbName][colName];
+
+                                    if (!(++readDocuments % DOC_LIMITER)) {
+                                        updateStats();
+                                        await wait(7);
+                                    }
+
                                     pushBuffer(Buffer.from(BLOCKS_IDENTIFIERS.DOCUMENT, 'utf8'));
-                                    pushBuffer(Buffer.from(serialize(doc)))
-                                });
+                                    pushBuffer(Buffer.from(serialize(doc)));
+                                }
                             }
                         }
                     }
